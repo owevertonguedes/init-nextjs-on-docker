@@ -1,4 +1,3 @@
-# README.md
 # 🚀 Next.js Docker Development Environment
 
 Uma configuração otimizada para desenvolvimento Next.js com Docker, incluindo ambientes de desenvolvimento e produção completamente containerizados.
