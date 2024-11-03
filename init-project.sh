@@ -1,41 +1,170 @@
 #!/bin/bash
-# init-project.sh - Script para CRIAR UM NOVO PROJETO Next.js com Docker (usar apenas uma vez)
+# init-project.sh - Configuração automática de projeto Next.js com Docker
 
 # Cores para output
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 log() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
 
-# Nome do projeto (primeiro argumento ou padrão 'my-nextjs-app')
+error() {
+    echo -e "${RED}[ERRO]${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+# Verificar e instalar dependências do sistema
+install_system_dependencies() {
+    log "🔍 Verificando dependências do sistema..."
+    
+    if ! command -v curl &> /dev/null; then
+        log "Instalando curl..."
+        apt-get update && apt-get install -y curl
+    fi
+
+    if ! command -v git &> /dev/null; then
+        log "Instalando git..."
+        apt-get update && apt-get install -y git
+    fi
+}
+
+# Instalar e configurar Docker
+setup_docker() {
+    if ! command -v docker &> /dev/null; then
+        log "Instalando Docker..."
+        curl -fsSL https://get.docker.com | sh
+        systemctl start docker
+        systemctl enable docker
+        
+        # Adicionar usuário atual ao grupo docker para evitar uso de sudo
+        usermod -aG docker $SUDO_USER
+        
+        # Configurar para usar BuildKit por padrão
+        mkdir -p /etc/docker
+        echo '{"features":{"buildkit":true}}' > /etc/docker/daemon.json
+        systemctl restart docker
+    fi
+
+    # Instalar versão mais recente do Docker Compose
+    if ! command -v docker-compose &> /dev/null; then
+        log "Instalando Docker Compose..."
+        LATEST_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep -o -P '(?<="tag_name": ").+(?=")')
+        curl -L "https://github.com/docker/compose/releases/download/${LATEST_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+    fi
+}
+
+# Verificar permissões e dependências
+check_prerequisites() {
+    if [ "$EUID" -ne 0 ]; then 
+        error "Este script precisa ser executado como root (sudo)"
+        exit 1
+    fi
+
+    install_system_dependencies
+    setup_docker
+    
+    log "✅ Todas as dependências estão instaladas!"
+}
+
+# Nome do projeto
 PROJECT_NAME=${1:-my-nextjs-app}
 
-log "🎯 Este script irá:"
-log "1. Criar um novo projeto Next.js: $PROJECT_NAME"
-log "2. Configurar toda estrutura Docker"
-log "3. Criar scripts de gerenciamento"
-echo
-log "⚠️  Este script deve ser executado APENAS UMA VEZ para criar o projeto!"
-echo
+log "🎯 Criando projeto Next.js com Docker: $PROJECT_NAME"
 read -p "Deseja continuar? (y/n) " -n 1 -r
 echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]
-then
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     log "❌ Operação cancelada"
     exit 1
 fi
 
-# Criar diretório temporário para arquivos Docker
-log "📁 Criando diretório temporário para arquivos Docker..."
-TEMP_DIR="temp_docker_files"
-mkdir -p $TEMP_DIR
+check_prerequisites
 
-# Criar docker-compose.dev.yml no diretório temporário
-log "📝 Criando arquivos Docker..."
-cat > $TEMP_DIR/docker-compose.dev.yml << 'EOL'
+# Criar projeto Next.js
+log "📦 Criando aplicação Next.js..."
+docker run --rm -it \
+  -v $(pwd):/app \
+  -w /app \
+  -u $(id -u):$(id -g) \
+  node:20.11.0-alpine \
+  sh -c "npm create next-app@latest $PROJECT_NAME --ts --tailwind --eslint --app --src-dir --import-alias --use-npm"
+
+cd $PROJECT_NAME
+
+# Criar Dockerfile.dev
+cat > Dockerfile.dev << 'EOL'
+FROM node:20.11.0-alpine
+
+WORKDIR /app
+
+# Instalar dependências do sistema
+RUN apk add --no-cache libc6-compat
+
+# Copiar apenas os arquivos necessários para instalação
+COPY package*.json ./
+ENV NODE_ENV=development
+
+# Instalar dependências
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev"]
+EOL
+
+# Criar Dockerfile.prod
+cat > Dockerfile.prod << 'EOL'
+FROM node:20.11.0-alpine AS deps
+
+WORKDIR /app
+
+# Instalar dependências do sistema
+RUN apk add --no-cache libc6-compat
+
+COPY package*.json ./
+RUN npm install --production
+
+FROM node:20.11.0-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+# Construir com variáveis de ambiente otimizadas
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV NODE_ENV production
+RUN npm run build
+
+FROM node:20.11.0-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV PORT 3000
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]
+EOL
+
+# Criar docker-compose.dev.yml
+cat > docker-compose.dev.yml << 'EOL'
 version: '3.8'
 services:
   app-dev:
@@ -55,7 +184,8 @@ services:
     stdin_open: true
 EOL
 
-cat > $TEMP_DIR/docker-compose.prod.yml << 'EOL'
+# Criar docker-compose.prod.yml
+cat > docker-compose.prod.yml << 'EOL'
 version: '3.8'
 services:
   app-prod:
@@ -70,63 +200,11 @@ services:
     restart: always
 EOL
 
-cat > $TEMP_DIR/Dockerfile.dev << 'EOL'
-FROM node:20.11.0-alpine
-
-WORKDIR /app
-
-# Atualiza npm de forma silenciosa
-RUN npm install -g npm@latest --quiet
-
-# Copia arquivos de dependência
-COPY package*.json ./
-ENV NODE_ENV=development
-
-# Instala dependências com flags para reduzir warnings
-RUN npm install --quiet --no-fund --no-audit
-
-COPY . .
-
-EXPOSE 3000
-
-CMD ["npm", "run", "dev"]
-EOL
-
-cat > $TEMP_DIR/Dockerfile.prod << 'EOL'
-FROM node:20.11.0-alpine AS deps
-
-WORKDIR /app
-
-RUN npm install -g npm@latest --quiet
-
-COPY package*.json ./
-RUN npm install --quiet --no-fund --no-audit --frozen-lockfile
-
-FROM node:20.11.0-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-RUN npm run build
-
-FROM node:20.11.0-alpine AS runner
-WORKDIR /app
-
-ENV NODE_ENV production
-ENV PORT 3000
-
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-
-EXPOSE 3000
-
-CMD ["node", "server.js"]
-EOL
-
-cat > $TEMP_DIR/docker-scripts.sh << 'EOL'
+# Criar CLI de gerenciamento
+cat > docker-cli.sh << 'EOL'
 #!/bin/bash
+
 # Cores para output
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
@@ -135,227 +213,128 @@ log() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
 }
 
-cleanup_container() {
-    local container_name=$1
-    if [ "$(docker ps -q -f name=$container_name)" ]; then
-        log "🛑 Parando container $container_name..."
-        docker stop $container_name
-    fi
-    if [ "$(docker ps -aq -f name=$container_name)" ]; then
-        log "🗑️ Removendo container $container_name..."
-        docker rm $container_name
-    fi
+success() {
+    echo -e "${GREEN}✅ $1${NC}"
 }
 
 case "$1" in
-    "dev")
-        case "$2" in
-            "start")
-                log "🚀 Iniciando ambiente de desenvolvimento..."
-                cleanup_container "nextjs-app-dev"
-                docker-compose -f docker-compose.dev.yml up --build
-                ;;
-            "daemon")
-                log "🚀 Iniciando ambiente de desenvolvimento em background..."
-                cleanup_container "nextjs-app-dev"
-                docker-compose -f docker-compose.dev.yml up -d --build
-                log "✅ Ambiente iniciado em background!"
-                log "📋 Para ver os logs: ./docker-scripts.sh logs dev"
-                ;;
-            "stop")
-                log "🛑 Parando ambiente de desenvolvimento..."
-                docker-compose -f docker-compose.dev.yml down
-                ;;
-            *)
-                echo "Uso: ./docker-scripts.sh dev [start|daemon|stop]"
-                ;;
-        esac
+    # Comandos de Desenvolvimento
+    "dev:start")
+        log "🚀 Iniciando ambiente de desenvolvimento..."
+        docker-compose -f docker-compose.dev.yml up --build
         ;;
-    "prod")
-        case "$2" in
-            "deploy")
-                log "🚀 Iniciando deploy em produção..."
-                cleanup_container "nextjs-app-prod"
-                docker-compose -f docker-compose.prod.yml up -d --build
-                log "${GREEN}✅ Deploy realizado com sucesso!${NC}"
-                ;;
-            "stop")
-                log "🛑 Parando ambiente de produção..."
-                docker-compose -f docker-compose.prod.yml down
-                ;;
-            *)
-                echo "Uso: ./docker-scripts.sh prod [deploy|stop]"
-                ;;
-        esac
+    "dev:daemon")
+        log "🚀 Iniciando ambiente de desenvolvimento em background..."
+        docker-compose -f docker-compose.dev.yml up -d --build
+        success "Ambiente iniciado! Use './docker-cli.sh logs' para ver os logs"
         ;;
+    "dev:stop")
+        log "🛑 Parando ambiente de desenvolvimento..."
+        docker-compose -f docker-compose.dev.yml down
+        ;;
+
+    # Comandos de Produção
+    "prod:deploy")
+        log "🚀 Realizando deploy em produção..."
+        docker-compose -f docker-compose.prod.yml up -d --build
+        success "Deploy realizado com sucesso!"
+        ;;
+    "prod:stop")
+        log "🛑 Parando ambiente de produção..."
+        docker-compose -f docker-compose.prod.yml down
+        ;;
+    "prod:logs")
+        log "📋 Exibindo logs de produção..."
+        docker logs -f nextjs-app-prod
+        ;;
+
+    # Comandos de Logs
     "logs")
-        case "$2" in
-            "dev")
-                log "📋 Exibindo logs do ambiente de desenvolvimento..."
-                docker logs -f nextjs-app-dev
-                ;;
-            "prod")
-                log "📋 Exibindo logs do ambiente de produção..."
-                docker logs -f nextjs-app-prod
-                ;;
-            *)
-                echo "Uso: ./docker-scripts.sh logs [dev|prod]"
-                ;;
-        esac
+        log "📋 Exibindo logs de desenvolvimento..."
+        docker logs -f nextjs-app-dev
         ;;
-    "status")
-        log "ℹ️ Status dos containers:"
-        docker ps -a | grep nextjs-app
-        ;;
-    "cleanup")
+
+    # Comandos de Manutenção
+    "clean")
         log "🧹 Limpando recursos não utilizados..."
         docker system prune -af --volumes
-        log "✅ Limpeza concluída!"
+        success "Limpeza concluída!"
         ;;
+    "restart")
+        log "🔄 Reiniciando containers..."
+        docker-compose -f docker-compose.dev.yml restart
+        success "Containers reiniciados!"
+        ;;
+    "rebuild")
+        log "🔨 Reconstruindo containers..."
+        docker-compose -f docker-compose.dev.yml up -d --build --force-recreate
+        success "Containers reconstruídos!"
+        ;;
+
+    # Comando de Status
+    "status")
+        log "ℹ️  Status dos containers:"
+        docker ps -a | grep nextjs-app
+        ;;
+
     *)
-        echo "Uso: ./docker-scripts.sh <comando> [opção]"
-        echo "Comandos disponíveis:"
-        echo "  dev [start|daemon|stop] - Gerencia ambiente de desenvolvimento"
-        echo "  prod [deploy|stop]      - Gerencia ambiente de produção"
-        echo "  logs [dev|prod]         - Exibe logs dos ambientes"
-        echo "  status                  - Mostra status dos containers"
-        echo "  cleanup                 - Limpa recursos não utilizados"
+        echo "Uso: ./docker-cli.sh <comando>"
+        echo ""
+        echo "Comandos de Desenvolvimento:"
+        echo "  dev:start   - Inicia ambiente de desenvolvimento"
+        echo "  dev:daemon  - Inicia desenvolvimento em background"
+        echo "  dev:stop    - Para ambiente de desenvolvimento"
+        echo ""
+        echo "Comandos de Produção:"
+        echo "  prod:deploy - Realiza deploy em produção"
+        echo "  prod:stop   - Para ambiente de produção"
+        echo "  prod:logs   - Mostra logs de produção"
+        echo ""
+        echo "Comandos de Logs:"
+        echo "  logs        - Mostra logs de desenvolvimento"
+        echo ""
+        echo "Comandos de Manutenção:"
+        echo "  clean       - Limpa recursos não utilizados"
+        echo "  restart     - Reinicia containers"
+        echo "  rebuild     - Reconstrói containers"
+        echo "  status      - Mostra status dos containers"
         ;;
 esac
 EOL
 
-chmod +x $TEMP_DIR/docker-scripts.sh
+chmod +x docker-cli.sh
 
-cat > $TEMP_DIR/next.config.js << 'EOL'
+# Atualizar next.config.js
+cat > next.config.js << 'EOL'
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
-  reactStrictMode: true,
-  images: {
-    formats: ['image/avif', 'image/webp'],
-  },
-  experimental: {
-    optimizeCss: true,
-    turbotrace: true,
-  },
-  compress: true,
+  output: 'standalone'
 }
 
 module.exports = nextConfig
 EOL
 
-cat > $TEMP_DIR/.gitignore << 'EOL'
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
-
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# local env files
-.env*.local
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-EOL
-
-log "📝 Criando package.json personalizado..."
-cat > $TEMP_DIR/package.json << 'EOL'
-{
-  "name": "nextjs-app",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
-  },
-  "dependencies": {
-    "next": "14.1.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
-    "autoprefixer": "^10.4.17",
-    "eslint": "^8.57.0",
-    "eslint-config-next": "14.1.0",
-    "eslint-plugin-react": "^7.33.2",
-    "postcss": "^8.4.35",
-    "rimraf": "^5.0.5",
-    "tailwindcss": "^3.4.1",
-    "typescript": "^5.3.3"
-  },
-  "engines": {
-    "node": ">=20.0.0"
-  },
-  "resolutions": {
-    "rimraf": "^5.0.5",
-    "@humanwhocodes/config-array": "^0.13.0",
-    "eslint": "^8.57.0"
-  }
-}
-EOL
-
-log "📦 Criando aplicação Next.js..."
-# Criar o app Next.js usando Docker
-docker run --rm -it \
-  -v $(pwd):/app \
-  -w /app \
-  node:20.11.0-alpine \
-  sh -c "npx create-next-app@latest $PROJECT_NAME --ts --tailwind --eslint --app --src-dir --import-alias --use-npm --no-git && \
-         cd $PROJECT_NAME && \
-         cp ../temp_docker_files/package.json . && \
-         npm install --quiet --no-fund --no-audit"
-
-# Mover arquivos Docker para o diretório do projeto
-log "📝 Movendo arquivos Docker para o projeto..."
-mv $TEMP_DIR/* $PROJECT_NAME/
-rm -rf $TEMP_DIR
-
 log "${GREEN}✅ Projeto criado com sucesso!${NC}"
 log "
 🚀 PRÓXIMOS PASSOS:
 
-1. Entre no diretório do projeto:
-   cd $PROJECT_NAME
+1. cd $PROJECT_NAME
 
-2. Para DESENVOLVER, use:
-   ./docker-scripts.sh dev start    # inicia com logs
-   ./docker-scripts.sh dev daemon   # inicia em background
+2. Para desenvolvimento:
+   ./docker-cli.sh dev:start   # inicia com logs
+   ./docker-cli.sh dev:daemon  # inicia em background
+   ./docker-cli.sh dev:stop    # para o ambiente
 
-3. Para ver os LOGS:
-   ./docker-scripts.sh logs dev
+3. Para produção:
+   ./docker-cli.sh prod:deploy # deploy em produção
+   ./docker-cli.sh prod:stop   # para produção
+   ./docker-cli.sh prod:logs   # logs de produção
 
-4. Para ver o STATUS:
-   ./docker-scripts.sh status
+4. Outros comandos úteis:
+   ./docker-cli.sh status      # status dos containers
+   ./docker-cli.sh logs        # logs de desenvolvimento
+   ./docker-cli.sh clean       # limpa recursos
+   ./docker-cli.sh rebuild     # reconstrói containers
 
-❗ LEMBRE-SE: Este script init-project.sh não deve ser executado novamente!
-   Use apenas docker-scripts.sh para gerenciar seu projeto daqui pra frente.
+💡 Use ./docker-cli.sh sem argumentos para ver todos os comandos disponíveis
 "
