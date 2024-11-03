@@ -71,13 +71,19 @@ services:
 EOL
 
 cat > $TEMP_DIR/Dockerfile.dev << 'EOL'
-FROM node:latest
+FROM node:20.11.0-alpine
 
 WORKDIR /app
 
+# Atualiza npm de forma silenciosa
+RUN npm install -g npm@latest --quiet
+
+# Copia arquivos de dependência
 COPY package*.json ./
-RUN npm install
-RUN npm install -g npm@latest
+ENV NODE_ENV=development
+
+# Instala dependências com flags para reduzir warnings
+RUN npm install --quiet --no-fund --no-audit
 
 COPY . .
 
@@ -87,29 +93,32 @@ CMD ["npm", "run", "dev"]
 EOL
 
 cat > $TEMP_DIR/Dockerfile.prod << 'EOL'
-FROM node:latest AS deps
-WORKDIR /app
-COPY package*.json ./
-RUN npm install -g npm@latest
-RUN npm install --frozen-lockfile
+FROM node:20.11.0-alpine AS deps
 
-FROM node:latest AS builder
+WORKDIR /app
+
+RUN npm install -g npm@latest --quiet
+
+COPY package*.json ./
+RUN npm install --quiet --no-fund --no-audit --frozen-lockfile
+
+FROM node:20.11.0-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:latest AS runner
+FROM node:20.11.0-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV production
+ENV PORT 3000
 
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
 EXPOSE 3000
-ENV PORT 3000
 
 CMD ["node", "server.js"]
 EOL
@@ -276,8 +285,9 @@ log "📦 Criando aplicação Next.js..."
 docker run --rm -it \
   -v $(pwd):/app \
   -w /app \
-  node:latest \
-  bash -c "npx create-next-app@latest $PROJECT_NAME --ts --tailwind --eslint --app --src-dir --import-alias --use-npm --no-git"
+  node:20.11.0-alpine \
+  sh -c "npx create-next-app@latest $PROJECT_NAME --ts --tailwind --eslint --app --src-dir --import-alias --use-npm --no-git && \
+         cd $PROJECT_NAME && npm install --quiet --no-fund --no-audit"
 
 # Mover arquivos Docker para o diretório do projeto
 log "📝 Movendo arquivos Docker para o projeto..."
