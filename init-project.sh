@@ -280,6 +280,49 @@ yarn-error.log*
 next-env.d.ts
 EOL
 
+log "📝 Criando package.json personalizado..."
+cat > $TEMP_DIR/package.json << 'EOL'
+{
+  "name": "nextjs-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "autoprefixer": "^10.4.17",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "14.1.0",
+    "eslint-plugin-react": "^7.33.2",
+    "postcss": "^8.4.35",
+    "rimraf": "^5.0.5",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "resolutions": {
+    "rimraf": "^5.0.5",
+    "@humanwhocodes/config-array": "^0.13.0",
+    "eslint": "^8.57.0"
+  }
+}
+EOL
+
 log "📦 Criando aplicação Next.js..."
 # Criar o app Next.js usando Docker
 docker run --rm -it \
@@ -287,7 +330,9 @@ docker run --rm -it \
   -w /app \
   node:20.11.0-alpine \
   sh -c "npx create-next-app@latest $PROJECT_NAME --ts --tailwind --eslint --app --src-dir --import-alias --use-npm --no-git && \
-         cd $PROJECT_NAME && npm install --quiet --no-fund --no-audit"
+         cd $PROJECT_NAME && \
+         cp ../temp_docker_files/package.json . && \
+         npm install --quiet --no-fund --no-audit"
 
 # Mover arquivos Docker para o diretório do projeto
 log "📝 Movendo arquivos Docker para o projeto..."
