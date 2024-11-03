@@ -64,7 +64,9 @@ cd nome-do-projeto
 
 - `dev start`: Inicia ambiente de desenvolvimento com logs
 - `dev daemon`: Inicia em background
+- `dev stop`: Para o ambiente de desenvolvimento
 - `prod deploy`: Deploy em produção
+- `prod stop`: Para o ambiente de produção
 - `logs [dev|prod]`: Visualiza logs
 - `status`: Status dos containers
 - `cleanup`: Limpa recursos não utilizados

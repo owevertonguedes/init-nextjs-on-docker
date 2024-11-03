@@ -116,6 +116,7 @@ EOL
 
 cat > $TEMP_DIR/docker-scripts.sh << 'EOL'
 #!/bin/bash
+# Cores para output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -143,17 +144,38 @@ case "$1" in
             "start")
                 log "🚀 Iniciando ambiente de desenvolvimento..."
                 cleanup_container "nextjs-app-dev"
-                docker compose -f docker-compose.dev.yml up --build
+                docker-compose -f docker-compose.dev.yml up --build
                 ;;
             "daemon")
                 log "🚀 Iniciando ambiente de desenvolvimento em background..."
                 cleanup_container "nextjs-app-dev"
-                docker compose -f docker-compose.dev.yml up -d --build
+                docker-compose -f docker-compose.dev.yml up -d --build
                 log "✅ Ambiente iniciado em background!"
                 log "📋 Para ver os logs: ./docker-scripts.sh logs dev"
                 ;;
+            "stop")
+                log "🛑 Parando ambiente de desenvolvimento..."
+                docker-compose -f docker-compose.dev.yml down
+                ;;
             *)
-                echo "Uso: ./docker-scripts.sh dev [start|daemon]"
+                echo "Uso: ./docker-scripts.sh dev [start|daemon|stop]"
+                ;;
+        esac
+        ;;
+    "prod")
+        case "$2" in
+            "deploy")
+                log "🚀 Iniciando deploy em produção..."
+                cleanup_container "nextjs-app-prod"
+                docker-compose -f docker-compose.prod.yml up -d --build
+                log "${GREEN}✅ Deploy realizado com sucesso!${NC}"
+                ;;
+            "stop")
+                log "🛑 Parando ambiente de produção..."
+                docker-compose -f docker-compose.prod.yml down
+                ;;
+            *)
+                echo "Uso: ./docker-scripts.sh prod [deploy|stop]"
                 ;;
         esac
         ;;
@@ -176,12 +198,19 @@ case "$1" in
         log "ℹ️ Status dos containers:"
         docker ps -a | grep nextjs-app
         ;;
+    "cleanup")
+        log "🧹 Limpando recursos não utilizados..."
+        docker system prune -af --volumes
+        log "✅ Limpeza concluída!"
+        ;;
     *)
         echo "Uso: ./docker-scripts.sh <comando> [opção]"
         echo "Comandos disponíveis:"
-        echo "  dev [start|daemon] - Gerencia ambiente de desenvolvimento"
-        echo "  logs [dev|prod]   - Exibe logs dos ambientes"
-        echo "  status           - Mostra status dos containers"
+        echo "  dev [start|daemon|stop] - Gerencia ambiente de desenvolvimento"
+        echo "  prod [deploy|stop]      - Gerencia ambiente de produção"
+        echo "  logs [dev|prod]         - Exibe logs dos ambientes"
+        echo "  status                  - Mostra status dos containers"
+        echo "  cleanup                 - Limpa recursos não utilizados"
         ;;
 esac
 EOL
