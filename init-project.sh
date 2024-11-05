@@ -110,8 +110,9 @@ RUN apk add --no-cache libc6-compat
 COPY package*.json ./
 ENV NODE_ENV=development
 
-# Instalar dependências
-RUN npm install
+# Instalar dependências, incluindo @types/node
+RUN npm install && \
+    npm install --save-dev @types/node@20.11.0
 
 COPY . .
 
@@ -130,7 +131,8 @@ WORKDIR /app
 RUN apk add --no-cache libc6-compat
 
 COPY package*.json ./
-RUN npm install --production
+RUN npm install --production && \
+    npm install --save-dev @types/node@20.11.0
 
 FROM node:20.11.0-alpine AS builder
 WORKDIR /app
@@ -198,6 +200,38 @@ services:
       - NODE_ENV=production
     container_name: nextjs-app-prod
     restart: always
+EOL
+
+# Criar tsconfig.json atualizado
+cat > tsconfig.json << 'EOL'
+{
+  "compilerOptions": {
+    "target": "es5",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": ["node"]
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
 EOL
 
 # Criar CLI de gerenciamento
